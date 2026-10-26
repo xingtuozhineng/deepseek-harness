@@ -139,6 +139,8 @@ export async function connectDesktopWelcome(
       try {
         const { ref } = await settingsAndReference()
         if (ref === undefined) return { ok: false }
+        const states = await invoke({ namespace: 'credentials', method: 'describe', args: { refs: [ref] } })
+        if (!record(states) || !record(states[ref]) || states[ref].writable !== true) return { ok: false }
         await invoke({ namespace: 'credentials', method: 'set', args: { ref, value: apiKey } })
         return { ok: true }
       } catch {

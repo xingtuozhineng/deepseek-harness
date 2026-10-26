@@ -50,6 +50,22 @@ const operations = {
 }
 
 describe('desktop welcome window', () => {
+  it('blocks credential and skip IPC for a managed welcome while preserving sign-in', async () => {
+    const window = createWindow()
+    electron.create.mockReturnValue(window)
+    const saveApiKey = vi.fn(operations.saveApiKey)
+    const skip = vi.fn(operations.skip)
+    await openWelcomeWindow(resolveDesktopLocale('zh-CN'), { ...operations, saveApiKey, skip }, false)
+    expect(electron.create.mock.calls[0]?.[0]).toHaveProperty('webPreferences.additionalArguments', [
+      '--dsh-welcome-locale=zh-CN', '--dsh-welcome-managed',
+    ])
+    const own = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    await expect(electron.handlers.get(WELCOME_IPC.saveApiKey)!(own, 'synthetic-key')).resolves.toEqual({ ok: false })
+    await expect(electron.handlers.get(WELCOME_IPC.skip)!(own)).rejects.toThrow('requires sign-in')
+    await expect(electron.handlers.get(WELCOME_IPC.start)!(own)).resolves.toMatchObject({ status: 'signed-out' })
+    expect(saveApiKey).not.toHaveBeenCalled()
+    expect(skip).not.toHaveBeenCalled()
+  })
   it.each(['darwin', 'win32', 'linux'] as const)('keeps the %s preview fixed-size and sandboxed', (platform) => {
     const options = welcomeWindowOptions(platform, resolveDesktopLocale('zh-CN'))
     expect(options).toMatchObject({

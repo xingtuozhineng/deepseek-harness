@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { connectDesktopWelcome } from '../src/welcome-backend.ts'
 
-function transport(preference?: string) {
+function transport(preference?: string, writable = true) {
   const keys = new Map<string, string>()
   const namespaces = [
     { ns: 'llm-deepseek', value: { apiKeyEnv: 'CUSTOM_DEEPSEEK_KEY' } },
@@ -23,7 +23,7 @@ function transport(preference?: string) {
     else if (method === 'productAnalytics/enabled') value = true
     else if (method === 'productAnalytics/report') value = undefined
     else if (method === 'credentials/set') keys.set(payload.args.ref, payload.args.value)
-    else value = Object.fromEntries(payload.args.refs.map(ref => [ref, { configured: keys.has(ref), writable: true }]))
+    else value = Object.fromEntries(payload.args.refs.map(ref => [ref, { configured: keys.has(ref), writable }]))
     return Response.json({ type: 'server-response', rpcId, result: { ok: true, value } })
   })
   return { send, keys, namespaces }
@@ -32,6 +32,14 @@ function transport(preference?: string) {
 const url = 'http://127.0.0.1:19387/?token=fixture'
 
 describe('desktop welcome Web operations', () => {
+  it('refuses to save when Host exposes a read-only credential reference', async () => {
+    const host = transport(undefined, false)
+    const backend = await connectDesktopWelcome(url, host.send)
+    expect((await backend.read()).writable).toBe(false)
+    expect(await backend.save('synthetic-key')).toEqual({ ok: false })
+    expect(host.keys.size).toBe(0)
+    expect(host.send.mock.calls.some(([, init]) => typeof init?.body === 'string' && init.body.includes('credentials/set'))).toBe(false)
+  })
   it('authenticates through Web and stores only through the configured credential reference', async () => {
     const host = transport()
     const backend = await connectDesktopWelcome(url, host.send)

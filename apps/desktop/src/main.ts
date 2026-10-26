@@ -1149,6 +1149,7 @@ async function main(): Promise<void> {
       return Promise.resolve()
     }
     openingWelcome ??= (async () => {
+      const welcomePolicy = await readWelcomeState()
       welcomeWindow = await openWelcomeWindow(locale, {
         analytics: track,
         analyticsEnabled: () => Promise.resolve(analyticsEnabled),
@@ -1180,7 +1181,7 @@ async function main(): Promise<void> {
           return { ok: true }
         },
         skip: enterWorkspace,
-      })
+      }, welcomePolicy.writable)
       const window = welcomeWindow
       window.once('closed', () => {
         void welcomeBackend?.account.state().then((state) => {
