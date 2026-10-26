@@ -11,10 +11,11 @@ import type { WelcomeSaveResult, WelcomeNotice } from '../src/welcome-api.ts'
 const html = readFileSync(join(import.meta.dirname, '../renderer/welcome.html'), 'utf8')
 afterEach(cleanup)
 
-function mount(language = 'zh-CN', takeNotice = vi.fn<() => Promise<WelcomeNotice | undefined>>().mockResolvedValue(undefined)) {
+function mount(language = 'zh-CN', takeNotice = vi.fn<() => Promise<WelcomeNotice | undefined>>().mockResolvedValue(undefined), allowApiKey = true) {
   cleanup()
   const stopAccount = vi.fn()
   const api = {
+    allowApiKey,
     takeNotice,
     analytics: vi.fn(async (_event: string, _attributes: object) => {}),
     analyticsEnabled: async () => true,
@@ -48,6 +49,17 @@ function mount(language = 'zh-CN', takeNotice = vi.fn<() => Promise<WelcomeNotic
 }
 
 describe('desktop welcome presentation', () => {
+  it('removes API-key entry, form and failure alternative in managed mode', async () => {
+    const view = mount('zh-CN', vi.fn<() => Promise<WelcomeNotice | undefined>>().mockResolvedValue(undefined), false)
+    expect(view.document.querySelector('#api-key')).toBeNull()
+    expect(view.document.querySelector('#key-form')).toBeNull()
+    expect(view.document.querySelector('#key-actions')).toBeNull()
+    fireEvent.click(view.button('#sign-in'))
+    await vi.waitFor(() => { expect(view.api.startSignIn).toHaveBeenCalledOnce() })
+    expect(view.document.querySelector('#auth-api-key')).toBeNull()
+    expect(view.api.saveApiKey).not.toHaveBeenCalled()
+    expect(view.api.skip).not.toHaveBeenCalled()
+  })
   it.each(['zh-CN', 'en'])('renders the %s entry and API-key step', async (language) => {
     const view = mount(language)
     expect(view.document.documentElement.lang).toBe(language)
