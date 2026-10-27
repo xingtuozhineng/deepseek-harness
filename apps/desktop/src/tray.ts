@@ -1,6 +1,6 @@
 /** Windows system tray: the always-present way back to a hidden window and the explicit quit entry. */
 
-import { Menu, nativeImage, Tray } from 'electron'
+import { app, Menu, nativeImage, Tray } from 'electron'
 import type { DesktopLocale } from './locale.ts'
 
 /** Main-process actions the tray triggers; both run the same paths as the window and application menu. */
@@ -31,11 +31,14 @@ export class DesktopTray {
     const tray = this.tray
     if (tray === undefined) return
     const { messages } = this.options.locale()
-    tray.setToolTip(messages.aboutProduct)
+    // Packagers already declare productName. Electron prefers it over the npm name.
+    // Unpackaged source launches keep the shipped Desktop name.
+    const productName = app.isPackaged ? app.getName() : messages.aboutProduct
+    tray.setToolTip(productName)
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: messages.openApplication, click: () => { this.options.open() } },
+      { label: messages.openApplication.replace(messages.aboutProduct, productName), click: () => { this.options.open() } },
       { type: 'separator' },
-      { label: messages.quitApplication, click: () => { this.options.quit() } },
+      { label: messages.quitApplication.replace(messages.aboutProduct, productName), click: () => { this.options.quit() } },
     ]))
   }
 
