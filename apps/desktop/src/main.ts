@@ -84,8 +84,22 @@ const rendererConsole = new RendererConsoleTail()
 // set before ready so the first fatal report already resolves under it.
 app.setAppLogsPath()
 
+function brandDesktopLocale(resolved: ReturnType<typeof resolveDesktopLocale>): ReturnType<typeof resolveDesktopLocale> {
+  if (!app.isPackaged) return resolved
+  const productName = app.getName().trim()
+  if (!productName || productName.startsWith('@') || productName === resolved.messages.aboutProduct) return resolved
+  const branded = { ...resolved.messages } as Record<string, string>
+  for (const [key, value] of Object.entries(resolved.messages)) {
+    if (key.startsWith('cliCommand')) continue
+    branded[key] = value
+      .replaceAll(resolved.messages.aboutProduct, productName)
+      .replaceAll('DSH', productName)
+  }
+  return { ...resolved, messages: branded as typeof resolved.messages }
+}
+
 function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
-  return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
+  return brandDesktopLocale(resolveDesktopLocale(windowsLanguage ?? app.getLocale()))
 }
 /** Quit without the task confirmation; the caller has already decided the application must stop. */
 function quitWithoutConfirmation(): void {
@@ -306,11 +320,23 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
       }))).popup({ window })
     }
   })
+  if (!allowDesktopDevTools()) {
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const key = input.key.toLowerCase()
+      const reloadKey = key === 'f5' || ((input.control || input.meta) && key === 'r')
+      const devToolsKey = key === 'f12' || ((input.control || input.meta) && input.shift && key === 'i')
+      if (reloadKey || devToolsKey) event.preventDefault()
+    })
+  }
   window.webContents.on('will-navigate', (event, url) => {
-    const destination = new URL(url)
-    const current = new URL(window.webContents.getURL())
-    if (destination.protocol !== `${SCHEME}:`
-      && !(destination.protocol === 'http:' && destination.origin === current.origin)) {
+    let destination: URL
+    try { destination = new URL(url) } catch { event.preventDefault(); return }
+    let currentOrigin: string | undefined
+    try { currentOrigin = new URL(window.webContents.getURL()).origin } catch { currentOrigin = undefined }
+    const allowedAppNavigation = destination.protocol === `${SCHEME}:` && destination.hostname === 'app'
+    const allowedLocalHostNavigation = destination.protocol === 'http:' && currentOrigin !== undefined && destination.origin === currentOrigin
+    if (!allowedAppNavigation && !allowedLocalHostNavigation) {
       event.preventDefault()
       if (['http:', 'https:'].includes(destination.protocol)) void shell.openExternal(url)
     }
@@ -357,7 +383,7 @@ async function main(): Promise<void> {
   let updateStopFailure: DesktopHostUncleanExitError | undefined
   let updateState: DesktopUpdateState = { phase: 'idle' }
   const systemLanguages = app.getPreferredSystemLanguages()
-  let locale = resolveDesktopStartupLocale(null, systemLanguages)
+  let locale = brandDesktopLocale(resolveDesktopStartupLocale(null, systemLanguages))
   windowsLanguage = locale.id
   let mandatoryPolicy: DesktopMandatoryUpdatePolicy | undefined
   let mandatoryUI: DesktopMandatoryUpdateWindow | undefined
@@ -766,7 +792,7 @@ async function main(): Promise<void> {
     const window = mainWindow
     if (window === undefined || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
       || typeof next !== 'string') return
-    const current = resolveDesktopStartupLocale(next, systemLanguages)
+    const current = brandDesktopLocale(resolveDesktopStartupLocale(next, systemLanguages))
     if (current.id === locale.id) return
     locale = current
     platformView.notifyLocaleChanged()
@@ -1210,7 +1236,7 @@ async function main(): Promise<void> {
     if (quitting || recovery.active) return
     const state = await readWelcomeState()
     if (isQuitting() || backend.state.phase !== 'ready') return
-    locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
+    locale = brandDesktopLocale(resolveDesktopStartupLocale(state.localePreference, systemLanguages))
     windowsLanguage = locale.id
     refreshApplicationMenu()
     if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {

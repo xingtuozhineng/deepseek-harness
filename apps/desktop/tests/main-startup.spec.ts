@@ -409,7 +409,8 @@ beforeEach(() => {
   onTestFinished(() => { rmSync(userData, { recursive: true, force: true }) })
   harness.app.getPath.mockImplementation(name => name === 'userData' ? userData : `desktop-test-${name}`)
   harness.dialog.showMessageBox.mockImplementation((options: { title?: string }) => {
-    if (options.title !== en.startupFailed) return Promise.resolve({ response: 1 })
+    const expectedFailedTitle = harness.app.isPackaged ? en.startupFailed.replace(en.aboutProduct, harness.app.getName()) : en.startupFailed
+    if (options.title !== expectedFailedTitle) return Promise.resolve({ response: 1 })
     harness.dialogShown.resolve()
     return new Promise(() => {})
   })
@@ -552,6 +553,72 @@ describe('desktop main startup', () => {
     expect(harness.windows[0]!.options).toMatchObject({ webPreferences: { devTools: true } })
   })
 
+  it('blocks reload and DevTools shortcuts in packaged mode and guards unexpected main-window navigation', async () => {
+    vi.stubGlobal('process', { ...process, platform: 'win32', env: { ...process.env, DSH_DESKTOP_ALLOW_DEVTOOLS: undefined } })
+    harness.app.isPackaged = true
+    await readyForUpdate()
+    const window = harness.windows[0]!
+    Object.assign(window, { isFocused: () => false, isEnabled: () => true })
+    for (const input of [
+      { type: 'keyDown', key: 'F5', control: false, meta: false, shift: false },
+      { type: 'keyDown', key: 'r', control: true, meta: false, shift: false },
+      { type: 'keyDown', key: 'R', control: true, meta: false, shift: true },
+      { type: 'keyDown', key: 'r', control: false, meta: true, shift: false },
+      { type: 'keyDown', key: 'F12', control: false, meta: false, shift: false },
+      { type: 'keyDown', key: 'I', control: true, meta: false, shift: true },
+    ]) {
+      const event = { preventDefault: vi.fn() }
+      window.webContents.emit('before-input-event', event, input)
+      expect(event.preventDefault).toHaveBeenCalledOnce()
+    }
+    const normalKey = { preventDefault: vi.fn() }
+    window.webContents.emit('before-input-event', normalKey, { type: 'keyDown', key: 'a', control: false, meta: false, shift: false })
+    expect(normalKey.preventDefault).not.toHaveBeenCalled()
+
+    // File drops and malformed/empty current URLs are blocked without throwing.
+    window.urls.length = 0
+    const fileDrop = { preventDefault: vi.fn() }
+    window.webContents.emit('will-navigate', fileDrop, 'file:///C:/secret.txt')
+    expect(fileDrop.preventDefault).toHaveBeenCalledOnce()
+
+    const foreignCustom = { preventDefault: vi.fn() }
+    window.webContents.emit('will-navigate', foreignCustom, 'dsh-app://evil/')
+    expect(foreignCustom.preventDefault).toHaveBeenCalledOnce()
+
+    const appNav = { preventDefault: vi.fn() }
+    window.webContents.emit('will-navigate', appNav, 'dsh-app://app/settings')
+    expect(appNav.preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('replaces upstream DeepSeek Harness and DSH brand strings with the packaged product name in native dialogs', async () => {
+    vi.stubGlobal('process', { ...process, platform: 'win32' })
+    const originalName = harness.app.name
+    harness.app.isPackaged = true
+    harness.app.name = 'CUBE'
+    try {
+      vi.spyOn(harness.app, 'getLocale').mockReturnValue('zh-CN')
+      vi.spyOn(harness.app, 'getPreferredSystemLanguages').mockReturnValue(['zh-CN'])
+      await readyForUpdate()
+      const window = harness.windows[0]!
+      const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+      const handler = harness.handlers.get(DESKTOP_IPC.windowsMenu)!
+      const appMenu = handler(event, 'application', 48, 34)
+      const items = harness.menu.buildFromTemplate.mock.lastCall![0]
+      expect(items[0]!.label).toBe('关于 CUBE')
+      harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      ;(items[0]!.click as () => void)()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(harness.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+        title: '关于 CUBE',
+        message: 'CUBE',
+      }))
+      harness.popup.mock.lastCall![0].callback!()
+      await appMenu
+    } finally {
+      harness.app.name = originalName
+    }
+  })
+
   it.each([
     ['darwin', true, 'en-US'],
     ['darwin', false, 'zh-CN'],
@@ -568,8 +635,11 @@ describe('desktop main startup', () => {
     const options = harness.app.setAboutPanelOptions.mock.calls[0]![0]
     const expected = JSON.parse(readFileSync(new URL('./expected/about-panel.json', import.meta.url), 'utf8')) as Record<string, unknown>
     const [about, separator] = submenu
+    const expectedEntry = expected[`${platform}:${locale}`] as { menu: Array<{ label?: string; role?: string; type?: string }>; options: Record<string, unknown> }
+    const expectedName = packaged ? 'Desktop test' : 'DeepSeek Harness'
+    const expectedMenu = expectedEntry.menu.map(item => item.label ? { ...item, label: item.label.replaceAll('DeepSeek Harness', expectedName) } : item)
     expect({ menu: [{ label: about!.label, role: about!.role }, separator], options: { ...options, iconPath: '<app icon>' } })
-      .toEqual(expected[`${platform}:${locale}`])
+      .toEqual({ menu: expectedMenu, options: expectedEntry.options })
     expect(options.iconPath).toBe(packaged ? join('desktop-test-resources', 'icon.png')
       : join('desktop-test-app', 'resources', 'icon-windows.png'))
     if (platform !== 'win32') { expect(about!.click).toBeUndefined(); return }
@@ -579,7 +649,7 @@ describe('desktop main startup', () => {
     await vi.advanceTimersByTimeAsync(0)
     const zh = locale === 'zh-CN'
     expect(harness.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: 'info', title: zh ? '关于 DeepSeek Harness' : 'About DeepSeek Harness', message: 'DeepSeek Harness',
+      type: 'info', title: zh ? `关于 ${expectedName}` : `About ${expectedName}`, message: expectedName,
       detail: zh ? '版本 V1.0.0' : 'Version V1.0.0', buttons: [zh ? '确定' : 'OK'], cancelId: 0,
     }))
     // A dialog that cannot open is logged, not surfaced as an unhandled rejection.
@@ -994,7 +1064,7 @@ describe('desktop main startup', () => {
     expect(() => handler(event, 'application', NaN, 34)).toThrow('invalid popup request')
     const application = handler(event, 'application', 48, 34)
     expect(harness.menu.buildFromTemplate.mock.lastCall![0].map(item => item.label ?? item.type)).toEqual([
-      '关于 DeepSeek Harness', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', '退出',
+      '关于 Desktop test', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', '退出',
     ])
     expect(harness.popup.mock.lastCall![0]).toMatchObject({ window, x: 48, y: 34 })
     expect(harness.popup.mock.lastCall![0].callback).toBeTypeOf('function')
@@ -1391,7 +1461,7 @@ describe('desktop main startup', () => {
     harness.app.quit()
     await vi.advanceTimersByTimeAsync(0)
     expect(harness.dialog.showMessageBox).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      message: en.quitTitle, detail: en.quitActiveAndScheduledTasks, buttons: [en.quit, en.cancel], defaultId: 0, cancelId: 1,
+      message: 'Quit Desktop test?', detail: en.quitActiveAndScheduledTasks, buttons: [en.quit, en.cancel], defaultId: 0, cancelId: 1,
     }))
     expect(window.hide).not.toHaveBeenCalled()
     expect(host.stop).not.toHaveBeenCalled()
