@@ -153,6 +153,7 @@ const harness = await vi.hoisted(async () => {
   const app = Object.assign(new EventEmitter(), {
     isPackaged: true,
     name: 'Desktop test',
+    getName: (): string => app.name,
     whenReady: () => Promise.resolve(),
     getLocale: (): string => 'en-US',
     getPreferredSystemLanguages: () => ['en-US'],
@@ -518,10 +519,33 @@ describe('desktop main startup', () => {
     expect((await handler(new Request('dsh-app://unknown/update-dialog.html'))).status).toBe(404)
   })
 
-  it('installs hidden native DevTools shortcuts in the macOS application menu', async () => {
+  it('installs hidden native DevTools shortcuts in the macOS application menu when unpackaged', async () => {
     vi.stubGlobal('process', { ...process, platform: 'darwin' })
+    harness.app.isPackaged = false
     await readyForUpdate()
     expect(applicationMenuItems().slice(-2)).toEqual([
+      { role: 'toggleDevTools', visible: false },
+      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
+    ])
+    expect(harness.windows[0]!.options).toMatchObject({ webPreferences: { devTools: true } })
+  })
+
+  it.each(['win32', 'darwin'] as const)('disables DevTools and omits F12 shortcuts in packaged mode on %s', async (platform) => {
+    vi.stubGlobal('process', { ...process, platform, env: { ...process.env, DSH_DESKTOP_ALLOW_DEVTOOLS: undefined } })
+    harness.app.isPackaged = true
+    await readyForUpdate()
+    const menuItems = platform === 'win32'
+      ? (harness.menu.mock.calls[0]![0] as MenuItemConstructorOptions[])
+      : applicationMenuItems()
+    expect(menuItems.some(item => item.role === 'toggleDevTools')).toBe(false)
+    expect(harness.windows[0]!.options).toMatchObject({ webPreferences: { devTools: false } })
+  })
+
+  it('allows DevTools in packaged mode only when DSH_DESKTOP_ALLOW_DEVTOOLS=1 is set', async () => {
+    vi.stubGlobal('process', { ...process, platform: 'win32', env: { ...process.env, DSH_DESKTOP_ALLOW_DEVTOOLS: '1' } })
+    harness.app.isPackaged = true
+    await readyForUpdate()
+    expect(harness.menu.mock.calls[0]![0]).toEqual([
       { role: 'toggleDevTools', visible: false },
       { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
     ])
@@ -832,10 +856,7 @@ describe('desktop main startup', () => {
     } else if (platform === 'win32') {
       expect(window.options).toMatchObject({ titleBarStyle: 'hidden', titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT } })
       expect(window.options).not.toHaveProperty('vibrancy')
-      expect(harness.menu.mock.calls[0]![0]).toEqual([
-        { role: 'toggleDevTools', visible: false },
-        { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
-      ])
+      expect(harness.menu.mock.calls[0]![0]).toEqual([])
     } else {
       expect(window.options).not.toHaveProperty('titleBarStyle')
       expect(window.options).not.toHaveProperty('vibrancy')

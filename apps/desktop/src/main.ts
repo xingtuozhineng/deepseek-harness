@@ -205,6 +205,10 @@ function platformLoginUrl(authorizeUrl: string): string {
   return url.href
 }
 
+function allowDesktopDevTools(): boolean {
+  return !app.isPackaged || process.env.DSH_DESKTOP_ALLOW_DEVTOOLS === '1'
+}
+
 function createWindow(preload: string, show = false, primary = false): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
@@ -235,7 +239,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
       sandbox: true,
       webSecurity: true,
       webviewTag: primary,
-      devTools: true,
+      devTools: allowDesktopDevTools(),
     },
   })
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -976,10 +980,10 @@ async function main(): Promise<void> {
     { role: 'quit', ...(darwin ? { label: currentDesktopLocale().messages.quitApplication }
       : process.platform === 'win32' ? { label: currentDesktopLocale().messages.exitApplication } : {}) },
   ]
-  const devToolsItems: MenuItemConstructorOptions[] = [
+  const devToolsItems: MenuItemConstructorOptions[] = allowDesktopDevTools() ? [
     { role: 'toggleDevTools', visible: false },
     { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
-  ]
+  ] : []
   const refreshApplicationMenu = (): void => {
     Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'win32' ? devToolsItems : [{
       label: darwin ? app.name : currentDesktopLocale().messages.application,
